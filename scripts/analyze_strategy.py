@@ -6,20 +6,13 @@ import pandas as pd
 try:
     from common.indicators import compute_all_indicators
     from common.env import get_tushare_pro
+    from common.strategy import add_signal_columns
 except ModuleNotFoundError:
     import sys
     sys.path.append(str(Path(__file__).resolve().parents[1]))
     from common.indicators import compute_all_indicators
     from common.env import get_tushare_pro
-
-
-def is_ma30_rising(group: pd.DataFrame) -> bool:
-    # 至少需要2个有效 ma30 来判断最近两天上移
-    ma = group["ma30"].dropna()
-    if len(ma) < 2:
-        return False
-    last2 = ma.tail(2)
-    return bool(last2.iloc[-1] > last2.iloc[-2])
+    from common.strategy import add_signal_columns
 
 
 def get_latest_trade_date_from_cal(days_back: int = 30) -> str | None:
@@ -49,7 +42,7 @@ def analyze(data_dir: Path, prefer_trade_cal: bool = True) -> pd.DataFrame:
 
     # 指标计算
     use_cols = [
-        "ts_code","trade_date","open","high","low","close","vol"
+        "ts_code", "trade_date", "open", "high", "low", "close", "vol"
     ]
     # 日线数据确保字段存在
     for col in use_cols:
@@ -61,7 +54,10 @@ def analyze(data_dir: Path, prefer_trade_cal: bool = True) -> pd.DataFrame:
     # 计算涨跌幅（若原始数据未提供 pct_chg，则用前一日收盘推算）
     enriched = enriched.sort_values(["ts_code", "trade_date"]).copy()
     enriched["prev_close"] = enriched.groupby("ts_code")["close"].shift(1)
-    enriched["pct_chg"] = (enriched["close"] / enriched["prev_close"] - 1.0) * 100
+    enriched["pct_chg"] = (enriched["close"] /
+                           enriched["prev_close"] - 1.0) * 100
+    # 统一由共用策略模块生成信号（含：振幅<4%、偏离≤1.5%、MA30上移等）
+    df_sig = add_signal_columns(enriched)
 
     # 目标交易日：优先使用交易日历的最近交易日；若数据中不存在则回退为数据最大日期
     if enriched.empty:
@@ -77,44 +73,38 @@ def analyze(data_dir: Path, prefer_trade_cal: bool = True) -> pd.DataFrame:
         # 数据中没有目标交易日，回退为数据最大日期
         target_date = last_in_data
 
-    latest = enriched[enriched["trade_date"] == target_date].copy()
-
-    # 条件：J<22 且 日线 DIFF>0 且 MA30 上移 且 成交量 < 10日均量 且 当日涨跌幅在 [-2.5%, +2.25%]
-    cond_j = latest["J"] < 22
-    cond_diff = latest["diff"] > 0
-    cond_vol = latest["vol"].notna() & latest["vol_ma10"].notna() & (latest["vol"] < latest["vol_ma10"])
-    cond_pct = latest["pct_chg"].notna() & (latest["pct_chg"] >= -2.5) & (latest["pct_chg"] <= 2.25)
-    # MA30 上移需要回看
-    rising_codes = set()
-    for code, g in enriched.groupby("ts_code"):
-        if is_ma30_rising(g.sort_values("trade_date")):
-            rising_codes.add(code)
-    cond_ma = latest["ts_code"].isin(rising_codes)
-
-    selected = latest[cond_j & cond_diff & cond_ma & cond_vol & cond_pct].copy()
+    latest = df_sig[df_sig["trade_date"] == target_date].copy()
+    # 直接用共用模块计算的信号
+    selected = latest[latest["signal"]].copy()
 
     # 附加基本信息
     selected = selected.merge(
-        basics[["ts_code","name","industry","area","list_date"]],
+        basics[["ts_code", "name", "industry", "area", "list_date"]],
         on="ts_code",
         how="left"
     )
 
-    # 输出排序：按涨跌幅（如有）或 J 从小到大
+    # 输出排序：优先偏离度，其次涨跌幅或 J 从小到大
     if "pct_chg" in selected.columns:
-        selected = selected.sort_values(["pct_chg","J"], ascending=[True, True])
+        selected = selected.sort_values(
+            ["zx_dev_pct", "pct_chg", "J"], ascending=[True, True, True])
     else:
-        selected = selected.sort_values(["J"], ascending=True)
+        selected = selected.sort_values(
+            ["zx_dev_pct", "J"], ascending=[True, True])
 
     selected["trade_date"] = selected["trade_date"].astype(str)
     return selected
 
 
 def main():
-    parser = argparse.ArgumentParser(description="按策略筛选A股：J<22，Diff>0，MA30上移，并支持自动设定最新交易日")
-    parser.add_argument("--data", type=str, default="data", help="数据目录（包含 stock_basic.csv, daily.csv）")
-    parser.add_argument("--out", type=str, default="output.csv", help="筛选结果CSV")
-    parser.add_argument("--no-prefer-trade-cal", action="store_true", help="不从交易日历获取最新交易日，改用数据中最大日期")
+    parser = argparse.ArgumentParser(
+        description="按策略筛选A股：J<22，Diff>0，MA30上移，振幅<4%，收盘偏离知行短期趋势≤1.5%，并支持自动设定最新交易日")
+    parser.add_argument("--data", type=str, default="data",
+                        help="数据目录（包含 stock_basic.csv, daily.csv）")
+    parser.add_argument("--out", type=str,
+                        default="output.csv", help="筛选结果CSV")
+    parser.add_argument("--no-prefer-trade-cal",
+                        action="store_true", help="不从交易日历获取最新交易日，改用数据中最大日期")
     args = parser.parse_args()
 
     data_dir = Path(args.data)

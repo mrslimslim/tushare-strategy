@@ -35,7 +35,31 @@ def compute_macd_diff(group: pd.DataFrame) -> pd.DataFrame:
 def compute_ma(group: pd.DataFrame, window: int = 30, col: str = "close", out_col: str | None = None) -> pd.DataFrame:
     """计算简单移动平均线。默认为 MA30。"""
     out_col = out_col or f"ma{window}"
-    group[out_col] = group[col].rolling(window=window, min_periods=window).mean()
+    group[out_col] = group[col].rolling(
+        window=window, min_periods=window).mean()
+    return group
+
+
+def compute_ema(group: pd.DataFrame, span: int = 13, col: str = "close", out_col: str | None = None) -> pd.DataFrame:
+    """计算指数移动平均 EMA。默认 span=13。"""
+    out_col = out_col or f"ema{span}"
+    group[out_col] = group[col].ewm(span=span, adjust=False).mean()
+    return group
+
+
+def compute_zx_short_trend(group: pd.DataFrame) -> pd.DataFrame:
+    """知行短期趋势线：EMA(EMA(close, 10), 10)。输出列：'zx_short_trend'。
+
+    该指标在技术公式中标注为白色细线，这里只计算数值供筛选使用。
+    """
+    ema10_once = group["close"].ewm(span=10, adjust=False).mean()
+    zx = ema10_once.ewm(span=10, adjust=False).mean()
+    group["zx_short_trend"] = zx
+    # 额外补充：常用参考线 MA1=MA(close,60)，MA2=EMA(close,13)
+    if "ma60" not in group.columns:
+        group = compute_ma(group, window=60, col="close", out_col="ma60")
+    if "ema13" not in group.columns:
+        group = compute_ema(group, span=13, col="close", out_col="ema13")
     return group
 
 
@@ -51,7 +75,11 @@ def compute_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(["ts_code", "trade_date"]).copy()
     df = df.groupby("ts_code", group_keys=False).apply(compute_kdj)
     df = df.groupby("ts_code", group_keys=False).apply(compute_macd_diff)
-    df = df.groupby("ts_code", group_keys=False).apply(lambda g: compute_ma(g, window=30, col="close", out_col="ma30"))
+    df = df.groupby("ts_code", group_keys=False).apply(
+        lambda g: compute_ma(g, window=30, col="close", out_col="ma30"))
     # 成交量10日均量
-    df = df.groupby("ts_code", group_keys=False).apply(lambda g: compute_ma(g, window=10, col="vol", out_col="vol_ma10"))
+    df = df.groupby("ts_code", group_keys=False).apply(
+        lambda g: compute_ma(g, window=10, col="vol", out_col="vol_ma10"))
+    # 知行短期趋势线：EMA(EMA(close, 10), 10)
+    df = df.groupby("ts_code", group_keys=False).apply(compute_zx_short_trend)
     return df
