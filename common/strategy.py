@@ -54,7 +54,7 @@ def add_signal_columns(enriched: pd.DataFrame) -> pd.DataFrame:
         cond_zx = pd.Series(False, index=df.index)
 
     # 成交量条件：当日成交量在近10个交易日内处于最小、次小或第三小（按去重排序）
-    def _is_bottom_k_unique(a: np.ndarray, k: int = 2) -> float:
+    def _is_bottom_k_unique(a: np.ndarray, k: int = 1) -> float:
         # 要求窗口内10个值均为有限数
         if not np.all(np.isfinite(a)):
             return np.nan

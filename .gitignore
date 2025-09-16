@@ -1,1 +1,4 @@
 .env
+data/
+# 忽略所有csv文件
+*.csv

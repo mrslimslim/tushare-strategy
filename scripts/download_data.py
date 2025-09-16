@@ -36,6 +36,37 @@ def get_last_trade_date_str(pro, today: datetime | None = None, lookback_days: i
     return str(cal["cal_date"].max())
 
 
+def _normalize_date_str(date_str: str) -> str:
+    """将任意常见日期格式规整为 YYYYMMDD。支持: YYYYMMDD / YYYY-MM-DD / YYYY/MM/DD。
+    """
+    digits = "".join(ch for ch in str(date_str) if ch.isdigit())
+    if len(digits) != 8:
+        raise ValueError(f"非法日期格式: {date_str}. 期望 YYYYMMDD 或 YYYY-MM-DD")
+    return digits
+
+
+def get_last_trade_date_on_or_before(pro, date_str: str | None, lookback_days: int = 365) -> str:
+    """获取指定日期当日或之前的最近一个交易日。如果未提供日期，则返回最近交易日。
+
+    参数:
+    - date_str: 字符串日期(YYYYMMDD 或 YYYY-MM-DD)。None 表示使用今天。
+    - lookback_days: 回溯天数窗口，用于覆盖法定节假日及长假。
+    """
+    if not date_str:
+        return get_last_trade_date_str(pro, lookback_days=lookback_days)
+
+    norm = _normalize_date_str(date_str)
+    dt = datetime.strptime(norm, "%Y%m%d")
+    start_date = (dt - timedelta(days=lookback_days)).strftime("%Y%m%d")
+    end_date = norm
+    cal = pro.trade_cal(
+        exchange="SSE", start_date=start_date, end_date=end_date)
+    cal = cal[cal["is_open"] == 1]
+    if cal.empty:
+        raise RuntimeError(f"在 {start_date} 到 {end_date} 区间内没有开市日，无法确定截止交易日")
+    return str(cal["cal_date"].max())
+
+
 def fetch_a_share_basic(pro) -> pd.DataFrame:
     # 获取所有上市公司基本信息
     df = pro.stock_basic(exchange="", list_status="L",
@@ -88,13 +119,15 @@ def main():
                         help="Tushare Token（可选，默认读取 .env TUSHARE_TOKEN）")
     parser.add_argument("--out", type=str,
                         default=str(OUTPUT_DIR), help="输出目录")
+    parser.add_argument("--end-date", type=str, default=None,
+                        help="下载截止日期(YYYYMMDD)，默认为最近交易日；若为非交易日，将取不晚于该日的最近交易日")
     args = parser.parse_args()
 
     pro = get_tushare_pro(token=args.token)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    last_trade_date = get_last_trade_date_str(pro)
+    last_trade_date = get_last_trade_date_on_or_before(pro, args.end_date)
 
     basics = fetch_a_share_basic(pro)
     if basics.empty:
@@ -111,6 +144,7 @@ def main():
     meta = {
         "last_trade_date": last_trade_date,
         "days": args.days,
+        "arg_end_date": args.end_date,
         "total_stocks": len(ts_codes),
         "daily_rows": int(daily.shape[0]),
     }

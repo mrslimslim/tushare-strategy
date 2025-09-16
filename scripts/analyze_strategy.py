@@ -30,10 +30,16 @@ def get_latest_trade_date_from_cal(days_back: int = 30) -> str | None:
     cal = cal[cal["is_open"] == 1]
     if cal.empty:
         return None
-    return str(cal.iloc[-1]["cal_date"])
+    # 取区间内的最大交易日（而非依赖返回顺序）
+    try:
+        latest = int(cal["cal_date"].astype(int).max())
+    except Exception:
+        latest = str(cal["cal_date"].astype(str).max())
+        return latest
+    return str(latest)
 
 
-def analyze(data_dir: Path, prefer_trade_cal: bool = True) -> pd.DataFrame:
+def analyze(data_dir: Path, prefer_trade_cal: bool = True, specified_date: str | None = None) -> pd.DataFrame:
     basics_fp = data_dir / "stock_basic.csv"
     daily_fp = data_dir / "daily.csv"
 
@@ -64,16 +70,28 @@ def analyze(data_dir: Path, prefer_trade_cal: bool = True) -> pd.DataFrame:
         return pd.DataFrame()
 
     last_in_data = enriched["trade_date"].max()
-    target_date = last_in_data
-    if prefer_trade_cal:
-        latest_from_cal = get_latest_trade_date_from_cal(days_back=120)
-        if latest_from_cal is not None:
-            target_date = latest_from_cal
-    if target_date not in set(enriched["trade_date"].unique()):
-        # 数据中没有目标交易日，回退为数据最大日期
+    # 确定目标交易日：优先使用指定日期；否则遵循原有逻辑
+    if specified_date is not None:
+        target_date = specified_date
+    else:
         target_date = last_in_data
+        if prefer_trade_cal:
+            latest_from_cal = get_latest_trade_date_from_cal(days_back=120)
+            if latest_from_cal is not None:
+                target_date = latest_from_cal
+    # 统一 dtype 以匹配数据列
+    if pd.api.types.is_numeric_dtype(enriched["trade_date"].dtype):
+        try:
+            target_date_norm = int(target_date)
+        except Exception:
+            target_date_norm = last_in_data
+    else:
+        target_date_norm = str(target_date)
+    if target_date_norm not in set(enriched["trade_date"].unique()):
+        # 数据中没有目标交易日，回退为数据最大日期
+        target_date_norm = last_in_data
 
-    latest = df_sig[df_sig["trade_date"] == target_date].copy()
+    latest = df_sig[df_sig["trade_date"] == target_date_norm].copy()
     # 直接用共用模块计算的信号
     selected = latest[latest["signal"]].copy()
 
@@ -105,10 +123,16 @@ def main():
                         default="output.csv", help="筛选结果CSV")
     parser.add_argument("--no-prefer-trade-cal",
                         action="store_true", help="不从交易日历获取最新交易日，改用数据中最大日期")
+    parser.add_argument("--date", type=str, default=None,
+                        help="指定交易日（YYYYMMDD）。未提供则默认使用最新交易日")
     args = parser.parse_args()
 
     data_dir = Path(args.data)
-    result = analyze(data_dir, prefer_trade_cal=(not args.no_prefer_trade_cal))
+    result = analyze(
+        data_dir,
+        prefer_trade_cal=(not args.no_prefer_trade_cal),
+        specified_date=args.date,
+    )
 
     if result.empty:
         print("无符合条件的标的。")
