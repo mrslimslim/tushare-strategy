@@ -289,6 +289,85 @@ def summarize(trades_df: pd.DataFrame, nav_df: pd.DataFrame) -> Dict[str, float 
     return stats
 
 
+def run_backtest(
+    data: str | Path = "data",
+    start: str | None = None,
+    end: str | None = None,
+    hold_days: int = 5,
+    buy_cost_bps: float = 0.0,
+    sell_cost_bps: float = 0.0,
+    weight_scheme: str = "equal",
+    norm: str = "zscore",
+    min_turnover: float | None = None,
+    daily_topn: int | None = None,
+    streak_bonus: float = 0.0,
+) -> tuple[pd.DataFrame, pd.DataFrame, Dict[str, float | int]]:
+    """执行回测并返回交易明细、净值序列与统计摘要。"""
+    if hold_days <= 0:
+        raise ValueError("hold_days 必须为正整数")
+
+    data_dir = Path(data)
+    start_date = _parse_date(start)
+    end_date = _parse_date(end)
+
+    basics, enriched = load_and_enrich(data_dir)
+    if start_date is not None:
+        enriched = enriched[enriched["trade_date"] >= int(start_date)]
+    if end_date is not None:
+        enriched = enriched[enriched["trade_date"] <= int(end_date)]
+    if enriched.empty:
+        raise RuntimeError("数据为空或日期范围内无数据")
+
+    df_sig = add_signal_columns(enriched)
+    df_scored = add_score_columns(
+        df_sig,
+        norm=norm,
+        weight_scheme=weight_scheme,
+        min_turnover=min_turnover,
+        streak_bonus=streak_bonus,
+    )
+
+    eligible = df_scored["eligible_liquidity"].fillna(True)
+    signal_mask = df_scored["signal"].fillna(False)
+    if daily_topn is not None and int(daily_topn) > 0:
+        subset = df_scored[signal_mask & eligible].copy()
+        subset["_rank"] = subset.groupby("trade_date")["score"].rank(
+            ascending=False, method="first")
+        subset = subset[subset["_rank"] <= int(daily_topn)]
+        subset = subset.drop(columns=["_rank"])
+        df_for_backtest = subset
+    else:
+        df_for_backtest = df_scored[signal_mask & eligible]
+
+    trades = generate_trades(
+        df_for_backtest,
+        hold_days=hold_days,
+        buy_cost_bps=buy_cost_bps,
+        sell_cost_bps=sell_cost_bps,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    if not trades.empty:
+        trades = trades.merge(
+            basics[["ts_code", "name", "industry", "area", "list_date"]],
+            on="ts_code", how="left"
+        )
+        cols = [
+            "ts_code", "name", "industry", "area",
+            "signal_date", "entry_date", "entry_open",
+            "exit_date", "exit_close", "holding_days",
+            "gross_return", "net_return", "is_truncated", "list_date"
+        ]
+        trades = trades[cols]
+
+    nav_df = build_daily_nav(
+        df_scored, trades, buy_cost_bps, sell_cost_bps)
+
+    stats = summarize(trades, nav_df)
+    return trades, nav_df, stats
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
@@ -326,73 +405,25 @@ def main():
 
     args = parser.parse_args()
 
-    data_dir = Path(args.data)
-    start_date = _parse_date(args.start)
-    end_date = _parse_date(args.end)
-
-    basics, enriched = load_and_enrich(data_dir)
-    # 限定全局日期边界，用于每日净值视图
-    if start_date is not None:
-        enriched = enriched[enriched["trade_date"] >= int(start_date)]
-    if end_date is not None:
-        enriched = enriched[enriched["trade_date"] <= int(end_date)]
-    if enriched.empty:
-        print("数据为空或日期范围内无数据。")
-        return
-
-    df_sig = add_signal_columns(enriched)
-    # 评分并应用资格筛选
-    df_scored = add_score_columns(
-        df_sig,
-        norm=args.norm,
+    trades, nav_df, stats = run_backtest(
+        data=args.data,
+        start=args.start,
+        end=args.end,
+        hold_days=args.hold_days,
+        buy_cost_bps=args.buy_cost_bps,
+        sell_cost_bps=args.sell_cost_bps,
         weight_scheme=args.weight_scheme,
+        norm=args.norm,
         min_turnover=args.min_turnover,
+        daily_topn=args.daily_topn,
         streak_bonus=args.streak_bonus,
     )
 
-    # 如配置了 daily-topn，则对每个交易日按 score 选前N 只（仍要求 signal=True）
-    if args.daily_topn is not None and int(args.daily_topn) > 0:
-        g = df_scored[df_scored["signal"] &
-                      df_scored["eligible_liquidity"].fillna(True)].copy()
-        g["_rank"] = g.groupby("trade_date")["score"].rank(
-            ascending=False, method="first")
-        g = g[g["_rank"] <= int(args.daily_topn)]
-        g = g.drop(columns=["_rank"])  # 清理
-        df_for_backtest = g
-    else:
-        # 未限制 TopN，则使用所有 signal 且满足流动性资格的样本
-        df_for_backtest = df_scored[df_scored["signal"]
-                                    & df_scored["eligible_liquidity"].fillna(True)]
-    trades = generate_trades(df_for_backtest, hold_days=args.hold_days,
-                             buy_cost_bps=args.buy_cost_bps,
-                             sell_cost_bps=args.sell_cost_bps,
-                             start_date=start_date, end_date=end_date)
-
-    # 附加基本信息
-    if not trades.empty:
-        trades = trades.merge(
-            basics[["ts_code", "name", "industry", "area", "list_date"]],
-            on="ts_code", how="left"
-        )
-        # 列顺序
-        cols = [
-            "ts_code", "name", "industry", "area",
-            "signal_date", "entry_date", "entry_open",
-            "exit_date", "exit_close", "holding_days",
-            "gross_return", "net_return", "is_truncated", "list_date"
-        ]
-        trades = trades[cols]
-
-    nav_df = build_daily_nav(
-        df_scored, trades, args.buy_cost_bps, args.sell_cost_bps)
-
-    # 输出
     out_trades = Path(args.out_trades)
     out_daily = Path(args.out_daily)
     trades.to_csv(out_trades, index=False, encoding="utf-8-sig")
     nav_df.to_csv(out_daily, index=False, encoding="utf-8-sig")
 
-    stats = summarize(trades, nav_df)
     print(f"交易数: {stats['trades']}")
     print(f"胜率: {stats['win_rate']:.2%}")
     print(f"单笔平均净收益: {stats['avg_net_return']:.2%}")

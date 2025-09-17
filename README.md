@@ -80,3 +80,27 @@ python scripts/backtest_strategy.py \
 - 指标计算见 `common/indicators.py`
 - 环境与 token 加载见 `common/env.py`
 - 如需改变 MA30 上移的判定逻辑，可在 `is_ma30_rising` 中调整。
+
+## Web 服务 & 前端看板
+
+项目新增 FastAPI 服务与 Vue3 + Vite 看板，支持通过浏览器执行数据更新、筛选分析与回测。
+
+### 启动后端服务
+
+```bash
+# 建议先进入虚拟环境并安装依赖
+pip install -r requirements.txt
+
+# 启动 FastAPI（默认监听 8000）
+uvicorn service.api:app --reload
+```
+
+### 启动前端（需 Node.js ≥ 18）
+
+```bash
+cd frontend
+npm install
+VITE_API_BASE=http://localhost:8000 npm run dev
+```
+
+浏览器访问命令行输出的本地地址即可。若后端端口或地址有调整，请同步修改 `VITE_API_BASE`。

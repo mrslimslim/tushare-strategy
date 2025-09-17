@@ -138,6 +138,13 @@ def analyze(
         selected = selected.head(int(topn))
 
     selected["trade_date"] = selected["trade_date"].astype(str)
+
+    # 优先展示名称与核心得分信息
+    preferred_cols = ["name", "score", "ts_code"]
+    ordered = [col for col in preferred_cols if col in selected.columns]
+    ordered += [col for col in selected.columns if col not in ordered]
+    selected = selected[ordered]
+
     return selected
 
 

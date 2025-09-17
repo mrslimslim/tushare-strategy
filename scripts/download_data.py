@@ -112,6 +112,49 @@ def fetch_recent_daily(pro, ts_codes: List[str], end_date: str, n_days: int = 60
     return daily
 
 
+def run_download(
+    days: int = 60,
+    token: str | None = None,
+    out: str | Path = OUTPUT_DIR,
+    end_date: str | None = None,
+) -> dict:
+    """下载基础与日线数据并保存到目标目录，返回摘要信息。"""
+    if days <= 0:
+        raise ValueError("days 必须为正整数")
+
+    pro = get_tushare_pro(token=token)
+    out_dir = Path(out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    last_trade_date = get_last_trade_date_on_or_before(pro, end_date)
+
+    basics = fetch_a_share_basic(pro)
+    if basics.empty:
+        raise RuntimeError("未获取到A股基础信息")
+
+    ts_codes = basics["ts_code"].tolist()
+    daily = fetch_recent_daily(
+        pro, ts_codes, end_date=last_trade_date, n_days=days)
+
+    basics_fp = out_dir / "stock_basic.csv"
+    daily_fp = out_dir / "daily.csv"
+    basics.to_csv(basics_fp, index=False, encoding="utf-8-sig")
+    daily.to_csv(daily_fp, index=False, encoding="utf-8-sig")
+
+    meta = {
+        "last_trade_date": last_trade_date,
+        "days": int(days),
+        "arg_end_date": end_date,
+        "total_stocks": len(ts_codes),
+        "daily_rows": int(daily.shape[0]),
+        "output_dir": str(out_dir.resolve()),
+        "basics_path": str(basics_fp.resolve()),
+        "daily_path": str(daily_fp.resolve()),
+    }
+    pd.Series(meta).to_json(out_dir / "meta.json", force_ascii=False, indent=2)
+    return meta
+
+
 def main():
     parser = argparse.ArgumentParser(description="下载A股近N日日线数据并保存")
     parser.add_argument("--days", type=int, default=60, help="近N个交易日")
@@ -123,35 +166,15 @@ def main():
                         help="下载截止日期(YYYYMMDD)，默认为最近交易日；若为非交易日，将取不晚于该日的最近交易日")
     args = parser.parse_args()
 
-    pro = get_tushare_pro(token=args.token)
-    out_dir = Path(args.out)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    last_trade_date = get_last_trade_date_on_or_before(pro, args.end_date)
-
-    basics = fetch_a_share_basic(pro)
-    if basics.empty:
-        raise RuntimeError("未获取到A股基础信息")
-
-    ts_codes = basics["ts_code"].tolist()
-    daily = fetch_recent_daily(
-        pro, ts_codes, end_date=last_trade_date, n_days=args.days)
-
-    basics.to_csv(out_dir / "stock_basic.csv",
-                  index=False, encoding="utf-8-sig")
-    daily.to_csv(out_dir / "daily.csv", index=False, encoding="utf-8-sig")
-
-    meta = {
-        "last_trade_date": last_trade_date,
-        "days": args.days,
-        "arg_end_date": args.end_date,
-        "total_stocks": len(ts_codes),
-        "daily_rows": int(daily.shape[0]),
-    }
-    pd.Series(meta).to_json(out_dir / "meta.json", force_ascii=False, indent=2)
+    meta = run_download(
+        days=args.days,
+        token=args.token,
+        out=args.out,
+        end_date=args.end_date,
+    )
 
     print(
-        f"完成：{len(ts_codes)}只股票，{daily.shape[0]}行日线，交易日截至 {last_trade_date}。数据保存在 {out_dir}")
+        f"完成：{meta['total_stocks']}只股票，{meta['daily_rows']}行日线，交易日截至 {meta['last_trade_date']}。数据保存在 {meta['output_dir']}")
 
 
 if __name__ == "__main__":
