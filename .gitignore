@@ -1,4 +1,8 @@
 .env
 data/
-# 忽略所有csv文件
+# 忽略所有 CSV
 *.csv
+# 保留这些结果文件
+!output.csv
+!backtest_nav.csv
+!backtest_trades.csv
