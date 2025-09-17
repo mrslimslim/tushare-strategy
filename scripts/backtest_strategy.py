@@ -7,12 +7,12 @@ import pandas as pd
 
 try:
     from common.indicators import compute_all_indicators
-    from common.strategy import add_signal_columns
+    from common.strategy import add_signal_columns, add_score_columns
 except ModuleNotFoundError:
     import sys
     sys.path.append(str(Path(__file__).resolve().parents[1]))
     from common.indicators import compute_all_indicators
-    from common.strategy import add_signal_columns
+    from common.strategy import add_signal_columns, add_score_columns
 
 
 def _parse_date(s: str | None) -> str | None:
@@ -312,6 +312,17 @@ def main():
                         help="交易明细输出CSV")
     parser.add_argument("--out-daily", type=str, default="backtest_nav.csv",
                         help="组合净值输出CSV")
+    parser.add_argument("--weight-scheme", type=str, default="equal",
+                        choices=["equal", "momentum_heavy", "momentum_tilt"],
+                        help="跨模块权重方案：equal=等权；momentum_heavy=动量40/趋势30/量20/风险10")
+    parser.add_argument("--norm", type=str, default="zscore",
+                        choices=["zscore", "rank"], help="截面规范化方式")
+    parser.add_argument("--min-turnover", type=float, default=None,
+                        help="成交额门槛（vol*close），用于资格过滤")
+    parser.add_argument("--daily-topn", type=int, default=None,
+                        help="信号生成后，按每天综合得分选取前N只作为入选标的")
+    parser.add_argument("--streak-bonus", type=float, default=0.0,
+                        help="信号连续性加分系数（每连续1天叠加该系数）")
 
     args = parser.parse_args()
 
@@ -330,7 +341,29 @@ def main():
         return
 
     df_sig = add_signal_columns(enriched)
-    trades = generate_trades(df_sig, hold_days=args.hold_days,
+    # 评分并应用资格筛选
+    df_scored = add_score_columns(
+        df_sig,
+        norm=args.norm,
+        weight_scheme=args.weight_scheme,
+        min_turnover=args.min_turnover,
+        streak_bonus=args.streak_bonus,
+    )
+
+    # 如配置了 daily-topn，则对每个交易日按 score 选前N 只（仍要求 signal=True）
+    if args.daily_topn is not None and int(args.daily_topn) > 0:
+        g = df_scored[df_scored["signal"] &
+                      df_scored["eligible_liquidity"].fillna(True)].copy()
+        g["_rank"] = g.groupby("trade_date")["score"].rank(
+            ascending=False, method="first")
+        g = g[g["_rank"] <= int(args.daily_topn)]
+        g = g.drop(columns=["_rank"])  # 清理
+        df_for_backtest = g
+    else:
+        # 未限制 TopN，则使用所有 signal 且满足流动性资格的样本
+        df_for_backtest = df_scored[df_scored["signal"]
+                                    & df_scored["eligible_liquidity"].fillna(True)]
+    trades = generate_trades(df_for_backtest, hold_days=args.hold_days,
                              buy_cost_bps=args.buy_cost_bps,
                              sell_cost_bps=args.sell_cost_bps,
                              start_date=start_date, end_date=end_date)
@@ -351,7 +384,7 @@ def main():
         trades = trades[cols]
 
     nav_df = build_daily_nav(
-        df_sig, trades, args.buy_cost_bps, args.sell_cost_bps)
+        df_scored, trades, args.buy_cost_bps, args.sell_cost_bps)
 
     # 输出
     out_trades = Path(args.out_trades)
