@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 API_PORT="${API_PORT:-8000}"
-FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+FRONTEND_PORT="${FRONTEND_PORT:-5174}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 UVICORN_BIN="${UVICORN_BIN:-uvicorn}"
 FRONTEND_DIR="${ROOT_DIR}/frontend"
